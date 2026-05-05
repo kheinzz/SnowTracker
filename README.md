@@ -3,4 +3,12 @@ A tool to superimpose a gpx track over recent satellite high-res images using fr
 
 # The data
 
-We use Sentinel 2 images provided as WMS by (Sentinelhub)[https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/OGC/WMS.html]
+- To retrieve the images dates we use STAC API as provided by [Copernicus](https://catalogue.dataspace.copernicus.eu/stac/collections/SENTINEL-2)
+
+- We use Sentinel 2 images provided as WMS by [Sentinelhub](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/OGC/WMS.html)
+
+- To know if there was snowfalls between the last image and the one you're looking at, we use [open-meteo-archive API](https://archive-api.open-meteo.com/v1/archive)
+
+- Basemap provided by [Maptiler](https://cloud.maptiler.com/)
+
+Mainly made using Claude Sonnet
