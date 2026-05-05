@@ -82,14 +82,6 @@ body {
 input[type="date"].ctrl { color-scheme: dark; min-width: 130px; }
 input[type="file"].ctrl { padding: 6px 8px; font-size: 12px; cursor: pointer; }
 
-.slider-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 36px;
-}
-.slider-wrap input[type="range"] { width: 80px; accent-color: #60a5fa; }
-.slider-val { font-size: 12px; color: #9ca3af; min-width: 28px; }
 
 /* ── BUTTONS ─────────────────────────────────────────────────────────────── */
 .btn {
@@ -249,13 +241,6 @@ input[type="file"].ctrl { padding: 6px 8px; font-size: 12px; cursor: pointer; }
       <span class="field-label">Fin</span>
       <input type="date" id="endDate" class="ctrl">
     </div>
-    <div class="field">
-      <span class="field-label">Nuages max</span>
-      <div class="slider-wrap">
-        <input type="range" id="maxcc" min="0" max="100" value="30">
-        <span class="slider-val" id="maxccVal">30%</span>
-      </div>
-    </div>
     <button class="btn btn-primary" id="loadBtn">&#128269; Chercher</button>
   </div>
 
@@ -296,7 +281,7 @@ map.addControl(new maplibregl.NavigationControl());
 // ── DATE HELPERS ──────────────────────────────────────────────────────────────
 // Build Date in LOCAL calendar to avoid UTC midnight shifting the displayed day
 function parseLocalDate(str) {
-  const [y, m, d] = str.split('-').map(Number);
+  const [y, m, d] = str.split('-').map(Number); 
   return new Date(y, m - 1, d);
 }
 function formatDateLocal(dt) {
@@ -318,11 +303,9 @@ function addDaysLocal(dateStr, n) {
 })();
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
-const WMS_BASE  = 'https://sh.dataspace.copernicus.eu/ogc/wms/7dff4d3c-b1e3-40df-abe2-0561c1a1cf8b?';
-const STAC_BASE = 'https://catalogue.dataspace.copernicus.eu/stac/collections/SENTINEL-2/items';
+const WMS_BASE = 'https://sh.dataspace.copernicus.eu/ogc/wms/7dff4d3c-b1e3-40df-abe2-0561c1a1cf8b?';
 
-let allFetchedDates = [];   // [{date, cloudCover}] — raw catalog, no cc filter
-let currentDates    = [];   // filtered by maxcc slider
+let currentDates = [];   // [{date}]
 let currentIndex    = -1;
 let currentBbox     = null;
 let currentCenter   = null; // {lat, lon} — centroid of GPX for snow API
@@ -334,48 +317,15 @@ let isLoadingImage  = false;
 
 const snowCache = new Map(); // key → {depthCm, totalSnowfall} | null
 
-// ── STAC CATALOG ─────────────────────────────────────────────────────────────
-async function fetchCatalogDates(bbox, startDate, endDate) {
-  const bboxStr  = bbox.join(',');
-  const datetime = `${startDate}T00:00:00Z/${endDate}T23:59:59Z`;
-  let items = [], pages = 0;
-  let url = `${STAC_BASE}?bbox=${encodeURIComponent(bboxStr)}&datetime=${encodeURIComponent(datetime)}&limit=200&sortby=%2Bdatetime`;
-
-  while (url && pages < 15) {
-    pages++;
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`Catalogue HTTP ${r.status}`);
-    const d = await r.json();
-    items = items.concat(d.features || []);
-    const next = (d.links || []).find(l => l.rel === 'next');
-    url = next ? next.href : null;
-  }
-
-  // Aggregate by calendar date; keep best (lowest) cloud cover per day
-  const byDate = new Map();
-  for (const item of items) {
-    const date = (item.properties.datetime || '').slice(0, 10);
-    if (!date) continue;
-    const cc   = item.properties['eo:cloud_cover'] ?? null;
-    const prev = byDate.get(date);
-    if (!prev || (cc !== null && (prev.cloudCover === null || cc < prev.cloudCover)))
-      byDate.set(date, { date, cloudCover: cc });
-  }
-  return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
-}
-
-function fallbackDates(s, e) {
-  const out = [];
+// ── DATES (intervalle fixe 5 jours ≈ revisite Sentinel-2) ────────────────────
+function buildDates(s, e) {
+  const out = []; 
   let d = parseLocalDate(s), end = parseLocalDate(e);
   while (d <= end) {
-    out.push({ date: formatDateLocal(d), cloudCover: null });
+    out.push({ date: formatDateLocal(d) });
     d.setDate(d.getDate() + 5);
   }
   return out;
-}
-
-function applyCloudFilter(maxcc) {
-  currentDates = allFetchedDates.filter(d => d.cloudCover === null || d.cloudCover <= maxcc);
 }
 
 // ── SNOW API (Open-Meteo archive) ─────────────────────────────────────────────
@@ -450,10 +400,12 @@ async function refreshSnowBadge(currentDate) {
 }
 
 // ── WMS ───────────────────────────────────────────────────────────────────────
-function buildWmsUrl(bbox, date, maxcc) {
+function buildWmsUrl(bbox, date) {
+  // WMS 1.3.0 + EPSG:4326 : axe lat avant lon → minLat,minLon,maxLat,maxLon
+  const [minLon, minLat, maxLon, maxLat] = bbox;
   return `${WMS_BASE}SERVICE=WMS&REQUEST=GetMap&VERSION=1.3.0` +
-    `&LAYERS=NATURAL-COLOR&BBOX=${bbox.join(',')}&CRS=EPSG:4326` +
-    `&WIDTH=1024&HEIGHT=1024&FORMAT=image/jpeg&TIME=${date}&MAXCC=${maxcc}`;
+    `&LAYERS=NATURAL-COLOR&BBOX=${minLat},${minLon},${maxLat},${maxLon}&CRS=EPSG:4326` +
+    `&WIDTH=1024&HEIGHT=1024&FORMAT=image/jpeg&TIME=${date}`;
 }
 
 function expandBBoxByKm(bbox, km) {
@@ -530,15 +482,14 @@ async function showImageForIndex(i) {
   currentIndex   = i;
   syncNavButtons();
 
+  // Toujours afficher la date de l'image sélectionnée
   const { date, cloudCover } = currentDates[i];
   document.getElementById('currentDate').textContent = date;
-  const ccLabel = cloudCover !== null ? `☁ ${Math.round(cloudCover)}%` : '';
-  setStatus((ccLabel ? ccLabel + ' · ' : '') + 'chargement…');
+  setStatus('chargement…');
   showToast('Chargement de l\'image…', true);
 
   try {
-    const maxcc = document.getElementById('maxcc').value;
-    const r     = await fetch(buildWmsUrl(currentBbox, date, maxcc), { mode: 'cors' });
+    const r = await fetch(buildWmsUrl(currentBbox, date), { mode: 'cors' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const blob = await r.blob();
     if (blob.size === 0) throw new Error('image vide reçue');
@@ -558,7 +509,9 @@ async function showImageForIndex(i) {
       syncVisBtn();
     }
 
-    setStatus(cloudCover !== null ? `☁ ${Math.round(cloudCover)}%` : '');
+    // Réafficher la date de l'image affichée
+    document.getElementById('currentDate').textContent = date;
+    setStatus('');
     hideToast();
 
     // Snow badge — async, non-blocking
@@ -607,7 +560,7 @@ async function loadGPX() {
   currentCenter = { lat: (bbox[1] + bbox[3]) / 2, lon: (bbox[0] + bbox[2]) / 2 };
 
   // Reset state
-  allFetchedDates = []; currentDates = []; currentIndex = -1;
+  currentDates = []; currentIndex = -1;
   prevImageDate   = null; imageLoaded = false; imageVisible = false;
   if (lastObjectUrl) { URL.revokeObjectURL(lastObjectUrl); lastObjectUrl = null; }
   document.getElementById('currentDate').textContent = '—';
@@ -623,24 +576,7 @@ async function loadGPX() {
     paint: { 'line-color': '#f43f5e', 'line-width': 3, 'line-opacity': 0.9 } });
   map.fitBounds([[bbox[0],bbox[1]], [bbox[2],bbox[3]]], { padding: 40 });
 
-  // Fetch available dates from STAC catalog
-  const loadBtn = document.getElementById('loadBtn');
-  loadBtn.disabled = true;
-  showToast('Recherche des images disponibles…', true);
-  document.getElementById('currentDate').textContent = '…';
-
-  try {
-    allFetchedDates = await fetchCatalogDates(bbox, startVal, endVal);
-  } catch (e) {
-    console.warn('Catalogue indisponible, fallback 5j:', e);
-    setStatus('⚠ Catalogue indisponible');
-    allFetchedDates = fallbackDates(startVal, endVal);
-  } finally {
-    loadBtn.disabled = false;
-    hideToast();
-  }
-
-  applyCloudFilter(parseInt(document.getElementById('maxcc').value));
+  currentDates = buildDates(startVal, endVal);
 
   if (!currentDates.length) {
     document.getElementById('currentDate').textContent = '—';
@@ -662,33 +598,8 @@ document.getElementById('prevBtn').addEventListener('click', () => {
 document.getElementById('nextBtn').addEventListener('click', () => {
   if (currentIndex < currentDates.length - 1) showImageForIndex(currentIndex + 1);
 });
-
-document.getElementById('maxcc').addEventListener('input', e => {
-  document.getElementById('maxccVal').textContent = e.target.value + '%';
-  if (!allFetchedDates.length) return;
-
-  const prevDate = currentIndex >= 0 ? currentDates[currentIndex]?.date : null;
-  applyCloudFilter(parseInt(e.target.value));
-
-  if (!currentDates.length) { setStatus('Aucune image pour ce filtre'); syncNavButtons(); return; }
-
-  // Stay on same date if still available, otherwise jump to nearest
-  let newIdx = currentDates.findIndex(d => d.date === prevDate);
-  if (newIdx < 0 && prevDate) {
-    const prevTs = parseLocalDate(prevDate).getTime();
-    newIdx = 0;
-    let best = Infinity;
-    currentDates.forEach((d, i) => {
-      const diff = Math.abs(parseLocalDate(d.date).getTime() - prevTs);
-      if (diff < best) { best = diff; newIdx = i; }
-    });
-  } else if (newIdx < 0) {
-    newIdx = currentDates.length - 1;
-  }
-
-  syncNavButtons();
-  if (!isLoadingImage) showImageForIndex(newIdx);
-});
+ 
+ 
 
 document.getElementById('toggleImgBtn').addEventListener('click', toggleVisibility);
 
@@ -697,7 +608,7 @@ document.getElementById('settingsToggleBtn').addEventListener('click', () => {
   const row = document.getElementById('settingsRow');
   const btn = document.getElementById('settingsToggleBtn');
   row.classList.toggle('open');
-  btn.innerHTML = row.classList.contains('open') ? '✕' : '&#9776;';
+  btn.innerHTML = row.classList.contains('open') ? '✕' : '&#9776;'; 
 });
 </script>
 </body>
